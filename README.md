@@ -332,3 +332,52 @@ stream.
   encoders, paddles with calibration, or button matrix support.
 - No wheel display or battery telemetry is implemented.
 - Telemetry remains displayed until replaced; there is no stale-data blanking.
+
+## AI-assisted development disclaimer
+
+Generative AI was used to assist with the design, implementation,
+documentation, and review of this project. AI-generated or AI-assisted output
+can contain mistakes, incomplete assumptions, or unsafe recommendations. The
+project maintainers and users remain responsible for reviewing the source,
+testing it on their hardware, and verifying electrical and operational safety.
+
+This software is provided without warranty. Do not rely on it for safety-
+critical controls. Disconnect power before changing wiring, use appropriate
+fusing and current-limited supplies, and test the wheel in a safe environment
+before normal use.
+
+## License and third-party software
+
+Copyright (c) 2026 ESP32 SimHub Wireless Wheel contributors.
+
+Original code and documentation in this repository are free software licensed
+under the **GNU General Public License, version 3 or (at your option) any later
+version** (`GPL-3.0-or-later`). You may redistribute and modify the project
+under those terms. Distributed modified versions and derivative works must
+remain available under the GPL, and distributions must provide the
+corresponding source code as required by the license. See `LICENSE` for the
+complete terms and warranty disclaimer.
+
+This project builds against separately licensed open-source software. Those
+dependencies are not relicensed by this repository and remain subject to their
+own copyright notices and license terms:
+
+- **FastLED 3.10.3** is distributed under the MIT License. PlatformIO downloads
+  it from the dependency declared in `platformio.ini`.
+- **Arduino core for ESP32**, including the Wi-Fi, ESP-NOW, USB, TinyUSB, and
+  gamepad APIs used here, is distributed under its upstream licenses, primarily
+  LGPL-2.1-or-later, with bundled components under their stated licenses.
+- **Espressif ESP-IDF components** used by the Arduino core are distributed
+  under their applicable upstream licenses, commonly Apache-2.0.
+
+PlatformIO downloads these dependencies into its generated build directories;
+they are not original project code. When redistributing source or binaries,
+retain all required upstream copyright notices, license texts, attribution,
+and source-code offers or access required by the applicable dependency
+licenses. Consult the exact license files shipped with the dependency versions
+being distributed.
+
+SimHub is third-party software and is not included in this repository. This
+project is an independent community integration and is not affiliated with or
+endorsed by SimHub, Waveshare, Espressif, or the FastLED project. Product and
+project names may be trademarks of their respective owners.
