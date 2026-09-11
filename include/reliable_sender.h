@@ -14,14 +14,17 @@ namespace WheelProtocol {
 // arrive faster than ESP-NOW send-completion callbacks.
 class ReliableSender {
  public:
+  static constexpr size_t FRAME_CAPACITY = MAX_PACKET_SIZE;
+
   bool send(const uint8_t *address, const void *data, const size_t length) {
-    if (address == nullptr || data == nullptr || length > sizeof(current_.bytes)) {
+    if (address == nullptr || data == nullptr || length > FRAME_CAPACITY ||
+        length > UINT8_MAX) {
       return false;
     }
     Frame &target = (currentPending_ || inFlight_) ? queued_ : current_;
     memcpy(target.address, address, sizeof(target.address));
     memcpy(target.bytes, data, length);
-    target.length = length;
+    target.length = static_cast<uint8_t>(length);
     if (&target == &queued_) {
       queuedPending_ = true;
       ++coalesced;
@@ -69,9 +72,14 @@ class ReliableSender {
  private:
   struct Frame {
     uint8_t address[6]{};
-    uint8_t bytes[250]{};
-    size_t length = 0;
+    uint8_t bytes[FRAME_CAPACITY]{};
+    uint8_t length = 0;
   };
+
+  static_assert(sizeof(Frame::bytes) == MAX_PACKET_SIZE,
+                "Reliable sender must hold the largest protocol packet");
+  static_assert(sizeof(Frame::length) == 1,
+                "Reliable sender frame length must remain byte-sized");
 
   void promoteQueued() {
     current_ = queued_;

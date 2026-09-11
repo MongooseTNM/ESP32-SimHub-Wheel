@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <type_traits>
 
 namespace WheelProtocol {
@@ -95,10 +96,82 @@ using HeartbeatPacket = Packet<HeartbeatPayload>;
 using TelemetryPacket = Packet<TelemetryPayload>;
 using WheelInputPacket = Packet<WheelInputPayload>;
 
+constexpr size_t MAX_PACKET_SIZE = sizeof(TelemetryPacket);
+
 static_assert(std::is_trivially_copyable<PacketHeader>::value,
               "Protocol packets must be trivially copyable");
-static_assert(sizeof(TelemetryPacket) <= 250,
+static_assert(sizeof(PacketHeader) == 12, "Protocol v4 header size changed");
+static_assert(sizeof(DiscoveryPayload) == 4,
+              "Protocol v4 discovery payload size changed");
+static_assert(sizeof(PairingPayload) == 8,
+              "Protocol v4 pairing payload size changed");
+static_assert(sizeof(PairResetPayload) == 4,
+              "Protocol v4 reset payload size changed");
+static_assert(sizeof(HeartbeatPayload) == 4,
+              "Protocol v4 heartbeat payload size changed");
+static_assert(sizeof(TelemetryPayload) == 21,
+              "Protocol v4 telemetry payload size changed");
+static_assert(sizeof(WheelInputPayload) == 2,
+              "Protocol v4 wheel input payload size changed");
+static_assert(sizeof(DiscoveryPacket) == 18,
+              "Protocol v4 discovery packet size changed");
+static_assert(sizeof(PairingPacket) == 22,
+              "Protocol v4 pairing packet size changed");
+static_assert(sizeof(PairResetPacket) == 18,
+              "Protocol v4 reset packet size changed");
+static_assert(sizeof(HeartbeatPacket) == 18,
+              "Protocol v4 heartbeat packet size changed");
+static_assert(sizeof(TelemetryPacket) == 35,
+              "Protocol v4 telemetry packet size changed");
+static_assert(sizeof(WheelInputPacket) == 16,
+              "Protocol v4 wheel input packet size changed");
+static_assert(MAX_PACKET_SIZE == sizeof(TelemetryPacket),
+              "Maximum packet size must track the largest packet");
+static_assert(sizeof(DiscoveryPacket) <= MAX_PACKET_SIZE &&
+                  sizeof(PairingPacket) <= MAX_PACKET_SIZE &&
+                  sizeof(PairResetPacket) <= MAX_PACKET_SIZE &&
+                  sizeof(HeartbeatPacket) <= MAX_PACKET_SIZE &&
+                  sizeof(TelemetryPacket) <= MAX_PACKET_SIZE &&
+                  sizeof(WheelInputPacket) <= MAX_PACKET_SIZE,
+              "Maximum packet size must hold every protocol packet");
+static_assert(MAX_PACKET_SIZE <= 250,
               "ESP-NOW packet must remain below 250 bytes");
+static_assert(MAX_PACKET_SIZE <= std::numeric_limits<uint8_t>::max(),
+              "Packet length must fit in sender storage");
+static_assert(sizeof(DiscoveryPayload) <=
+                  std::numeric_limits<uint8_t>::max() &&
+              sizeof(PairingPayload) <= std::numeric_limits<uint8_t>::max() &&
+              sizeof(PairResetPayload) <=
+                  std::numeric_limits<uint8_t>::max() &&
+              sizeof(HeartbeatPayload) <=
+                  std::numeric_limits<uint8_t>::max() &&
+              sizeof(TelemetryPayload) <=
+                  std::numeric_limits<uint8_t>::max() &&
+              sizeof(WheelInputPayload) <=
+                  std::numeric_limits<uint8_t>::max(),
+              "Payload length must fit in the packet header");
+static_assert(sizeof(PacketHeader::sessionId) == 4,
+              "Protocol session IDs must remain 32-bit");
+static_assert(sizeof(PacketHeader::sequence) == 2,
+              "Protocol sequences must remain 16-bit");
+static_assert(sizeof(DiscoveryPayload::nonce) == 4,
+              "Protocol nonces must remain 32-bit");
+static_assert(sizeof(PairingPayload::wheelNonce) == 4 &&
+                  sizeof(PairingPayload::receiverNonce) == 4,
+              "Protocol pairing nonces must remain 32-bit");
+static_assert(sizeof(PairResetPayload::sessionId) == 4,
+              "Protocol reset session IDs must remain 32-bit");
+static_assert(sizeof(HeartbeatPayload::uptimeMs) == 4,
+              "Protocol uptime must remain 32-bit");
+static_assert(sizeof(TelemetryPayload::rpm) == 2 &&
+                  sizeof(TelemetryPayload::displayedRpmPercentX100) == 2 &&
+                  sizeof(TelemetryPayload::redLineRpm) == 2 &&
+                  sizeof(TelemetryPayload::redLineDisplayedPercentX100) == 2 &&
+                  sizeof(TelemetryPayload::maxRpm) == 2 &&
+                  sizeof(TelemetryPayload::minimumShownRpm) == 2 &&
+                  sizeof(TelemetryPayload::shiftLight1ProgressX1000) == 2 &&
+                  sizeof(TelemetryPayload::shiftLight2ProgressX1000) == 2,
+              "Protocol telemetry quantities must remain 16-bit");
 
 // CRC-16/CCITT-FALSE: polynomial 0x1021, initial value 0xFFFF.
 inline uint16_t crc16(const uint8_t *data, const size_t length) {
