@@ -1,8 +1,10 @@
 #include <Arduino.h>
+#include <Preferences.h>
 #include <USB.h>
 #include <USBHIDGamepad.h>
 #include <WiFi.h>
 #include <esp_now.h>
+#include <esp_system.h>
 #include <esp_wifi.h>
 
 #include <algorithm>
@@ -10,6 +12,7 @@
 #include <cstring>
 
 #include "espnow_protocol.h"
+#include "reliable_sender.h"
 #include "wheel_config.h"
 #include "wheel_constants.h"
 
@@ -31,14 +34,136 @@ uint16_t activeButtonMask = 0;
 uint32_t lastHidReportUs = 0;
 char serialLine[96]{};
 size_t serialLineLength = 0;
+Preferences preferences;
+ReliableSender reliableSender;
+uint8_t peerAddress[6]{};
+uint32_t sessionId = 0;
+uint32_t wheelNonce = 0;
+uint32_t receiverNonce = 0;
+uint32_t lastPairingSendMs = 0;
+uint32_t pairingStartedMs = 0;
+uint16_t lastInputSequence = 0;
+bool haveInputSequence = false;
+volatile bool paired = false;
+uint32_t lastWheelUptimeMs = 0;
+enum class PairingStage : uint8_t { Idle, RequestSent, CommitSent };
+volatile PairingStage pairingStage = PairingStage::Idle;
 
-void onDataReceived(const uint8_t *, const uint8_t *data, const int length) {
-  if (isValidWheelInput(data, length)) {
-    const auto *packet = reinterpret_cast<const WheelInputPacket *>(data);
-    receivedButtonMask = packet->buttonMask;
+bool sameAddress(const uint8_t *left, const uint8_t *right) {
+  return left != nullptr && right != nullptr && memcmp(left, right, 6) == 0;
+}
+
+bool addPeer(const uint8_t *address) {
+  if (esp_now_is_peer_exist(address)) return true;
+  esp_now_peer_info_t peer{};
+  memcpy(peer.peer_addr, address, 6);
+  peer.channel = ESPNOW_CHANNEL;
+  peer.encrypt = false;
+  return esp_now_add_peer(&peer) == ESP_OK;
+}
+
+void savePairing() {
+  preferences.begin("wheel-link", false);
+  preferences.putBytes("peer", peerAddress, sizeof(peerAddress));
+  preferences.putUInt("session", sessionId);
+  preferences.end();
+}
+
+bool loadPairing() {
+  preferences.begin("wheel-link", true);
+  const bool valid = preferences.getBytesLength("peer") == sizeof(peerAddress);
+  if (valid) preferences.getBytes("peer", peerAddress, sizeof(peerAddress));
+  sessionId = preferences.getUInt("session", 0);
+  preferences.end();
+  paired = valid && sessionId != 0;
+  return paired;
+}
+
+void clearPairing() {
+  preferences.begin("wheel-link", false);
+  preferences.clear();
+  preferences.end();
+  paired = false;
+  sessionId = 0;
+  haveInputSequence = false;
+  activeButtonMask = 0;
+}
+
+template <typename Payload>
+void sendDirect(const uint8_t *address, const MessageType type,
+                const uint32_t packetSession, const Payload &payload) {
+  const auto packet = makePacket(type, DeviceRole::Receiver, packetSession,
+                                 sequenceNumber++, payload);
+  esp_now_send(address, reinterpret_cast<const uint8_t *>(&packet),
+               sizeof(packet));
+}
+
+void onDataReceived(const uint8_t *source, const uint8_t *data, const int length) {
+  if (!paired && validatePacket<DiscoveryPayload>(
+                     data, length, MessageType::Discovery, DeviceRole::Wheel)) {
+    DiscoveryPacket packet{};
+    memcpy(&packet, data, sizeof(packet));
+    memcpy(peerAddress, source, sizeof(peerAddress));
+    wheelNonce = packet.payload.nonce;
+    receiverNonce = esp_random();
+    if (receiverNonce == 0) receiverNonce = 1;
+    sessionId = deriveSessionId(wheelNonce, receiverNonce);
+    addPeer(peerAddress);
+    const PairingPayload payload{wheelNonce, receiverNonce};
+    sendDirect(peerAddress, MessageType::PairRequest, 0, payload);
+    pairingStartedMs = lastPairingSendMs = millis();
+    pairingStage = PairingStage::RequestSent;
+    return;
+  }
+  if (!paired && sameAddress(source, peerAddress) &&
+      validatePacket<PairingPayload>(data, length, MessageType::PairAccept,
+                                     DeviceRole::Wheel, sessionId, true)) {
+    PairingPacket packet{};
+    memcpy(&packet, data, sizeof(packet));
+    sendDirect(peerAddress, MessageType::PairCommit, sessionId, packet.payload);
+    lastPairingSendMs = millis();
+    pairingStage = PairingStage::CommitSent;
+    return;
+  }
+  if (!paired && sameAddress(source, peerAddress) &&
+      validatePacket<PairingPayload>(data, length, MessageType::PairConfirmed,
+                                     DeviceRole::Wheel, sessionId, true)) {
+    paired = true;
+    pairingStage = PairingStage::Idle;
+    savePairing();
+    return;
+  }
+  if (!paired || !sameAddress(source, peerAddress)) return;
+  if (validatePacket<PairResetPayload>(data, length, MessageType::PairReset,
+                                       DeviceRole::Wheel, sessionId, true)) {
+    clearPairing();
+    return;
+  }
+  if (validatePacket<HeartbeatPayload>(data, length, MessageType::Heartbeat,
+                                       DeviceRole::Wheel, sessionId, true)) {
+    HeartbeatPacket packet{};
+    memcpy(&packet, data, sizeof(packet));
+    if (packet.payload.uptimeMs < lastWheelUptimeMs) haveInputSequence = false;
+    lastWheelUptimeMs = packet.payload.uptimeMs;
+    return;
+  }
+  if (validatePacket<WheelInputPayload>(
+          data, length, MessageType::WheelInput, DeviceRole::Wheel, sessionId,
+          true)) {
+    WheelInputPacket packet{};
+    memcpy(&packet, data, sizeof(packet));
+    if (haveInputSequence &&
+        !isSequenceNewer(packet.header.sequence, lastInputSequence)) return;
+    lastInputSequence = packet.header.sequence;
+    haveInputSequence = true;
+    receivedButtonMask = packet.payload.buttonMask;
     lastWheelInputMs = millis();
     inputPending = true;
   }
+}
+
+void onDataSent(const uint8_t *, const esp_now_send_status_t status) {
+  reliableSender.onComplete(status, millis());
 }
 
 bool addBroadcastPeer() {
@@ -50,17 +175,11 @@ bool addBroadcastPeer() {
 }
 
 void sendHeartbeat() {
-  const HeartbeatPacket packet{MAGIC,
-                               VERSION,
-                               MessageType::Heartbeat,
-                               DeviceRole::Receiver,
-                               0,
-                               sequenceNumber++,
-                               millis()};
-
-  if (esp_now_send(BROADCAST_ADDRESS,
-                   reinterpret_cast<const uint8_t *>(&packet),
-                   sizeof(packet)) != ESP_OK) {}
+  if (!paired) return;
+  const auto packet = makePacket(MessageType::Heartbeat, DeviceRole::Receiver,
+                                 sessionId, sequenceNumber++,
+                                 HeartbeatPayload{millis()});
+  reliableSender.send(peerAddress, &packet, sizeof(packet));
 }
 
 uint16_t parseClampedU16(const char *text, const uint32_t scale = 1) {
@@ -97,31 +216,24 @@ bool parseAndSendTelemetry(char *line) {
     return false;
   }
 
-  TelemetryPacket packet{};
-  packet.magic = MAGIC;
-  packet.version = VERSION;
-  packet.type = MessageType::Telemetry;
-  packet.rpm = parseClampedU16(rpm);
-  packet.displayedRpmPercentX100 = parseClampedU16(displayedRpmPercent, 100);
-  packet.redLineRpm = parseClampedU16(redLineRpm);
-  packet.redLineDisplayedPercentX100 =
+  if (!paired) return false;
+  TelemetryPayload telemetry{};
+  telemetry.rpm = parseClampedU16(rpm);
+  telemetry.displayedRpmPercentX100 = parseClampedU16(displayedRpmPercent, 100);
+  telemetry.redLineRpm = parseClampedU16(redLineRpm);
+  telemetry.redLineDisplayedPercentX100 =
       parseClampedU16(redLineDisplayedPercent, 100);
-  packet.maxRpm = parseClampedU16(maxRpm);
-  packet.minimumShownRpm = parseClampedU16(minimumShownRpm);
-  packet.shiftLight1ProgressX1000 =
+  telemetry.maxRpm = parseClampedU16(maxRpm);
+  telemetry.minimumShownRpm = parseClampedU16(minimumShownRpm);
+  telemetry.shiftLight1ProgressX1000 =
       parseClampedU16(shiftLight1Progress, 1000);
-  packet.shiftLight2ProgressX1000 =
+  telemetry.shiftLight2ProgressX1000 =
       parseClampedU16(shiftLight2Progress, 1000);
-  packet.rpmRedLineReached = strcmp(redLineReached, "1") == 0;
-  strncpy(packet.gear, gear, sizeof(packet.gear) - 1);
-
-  const esp_err_t result =
-      esp_now_send(BROADCAST_ADDRESS,
-                   reinterpret_cast<const uint8_t *>(&packet), sizeof(packet));
-  if (result != ESP_OK) {
-    return false;
-  }
-  return true;
+  telemetry.rpmRedLineReached = strcmp(redLineReached, "1") == 0;
+  strncpy(telemetry.gear, gear, sizeof(telemetry.gear) - 1);
+  const auto packet = makePacket(MessageType::Telemetry, DeviceRole::Receiver,
+                                 sessionId, sequenceNumber++, telemetry);
+  return reliableSender.send(peerAddress, &packet, sizeof(packet));
 }
 
 void processSimHubSerial() {
@@ -176,13 +288,34 @@ void setup() {
   }
 
   esp_now_register_recv_cb(onDataReceived);
+  esp_now_register_send_cb(onDataSent);
   if (!addBroadcastPeer()) {
     delay(2000);
     ESP.restart();
   }
+  loadPairing();
+  if (paired && !addPeer(peerAddress)) clearPairing();
 }
 
 void loop() {
+  const uint32_t serviceNow = millis();
+  reliableSender.service(serviceNow);
+  if (!paired && pairingStage != PairingStage::Idle &&
+      serviceNow - pairingStartedMs >= PAIRING_TIMEOUT_MS) {
+    pairingStage = PairingStage::Idle;
+    sessionId = 0;
+    memset(peerAddress, 0, sizeof(peerAddress));
+  } else if (!paired && pairingStage != PairingStage::Idle &&
+      serviceNow - lastPairingSendMs >= PAIRING_RETRY_INTERVAL_MS) {
+    const PairingPayload payload{wheelNonce, receiverNonce};
+    sendDirect(peerAddress,
+               pairingStage == PairingStage::RequestSent
+                   ? MessageType::PairRequest
+                   : MessageType::PairCommit,
+               pairingStage == PairingStage::RequestSent ? 0 : sessionId,
+               payload);
+    lastPairingSendMs = serviceNow;
+  }
   processSimHubSerial();
 
   const uint32_t now = millis();

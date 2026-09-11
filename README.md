@@ -16,7 +16,9 @@ implemented yet.
 ## Features
 
 - Two Waveshare ESP32-S3-Zero boards using the Arduino framework.
-- Bidirectional ESP-NOW communication on Wi-Fi channel 6.
+- Automatically paired bidirectional ESP-NOW communication on Wi-Fi channel 6.
+- CRC-16 packet validation, sequence checks, unicast delivery status, and
+  bounded retransmission with latest-value coalescing.
 - Eight active-low wheel buttons exposed as USB gamepad buttons 1-8.
 - Immediate button-change reports with a low-overhead 25 Hz safety refresh.
 - A 250 ms receiver failsafe that releases buttons if wireless input stops.
@@ -217,9 +219,8 @@ thresholds in the firmware:
 With 12 LEDs, each color section contains four LEDs. Counts that do not divide
 evenly by three are distributed using integer section boundaries.
 
-The wheel retains the most recent telemetry indefinitely. If SimHub or the
-receiver stops sending data, the strip continues showing the latest state until
-a new valid packet arrives or the wheel is restarted.
+The wheel clears the RPM strip if valid telemetry stops for 500 ms, preventing
+stale RPM or shift-light output from remaining visible after a link failure.
 
 LED output is updated only when telemetry changes or the redline flash changes
 phase. Unchanged frames are not transmitted to the strip, reducing processor
@@ -243,17 +244,37 @@ latency.
 ## ESP-NOW behavior
 
 - Both devices operate in Wi-Fi station mode on channel 6.
-- Packets include a protocol magic value, version, and message type.
-- Button packets contain the complete state and a sequence number.
-- Telemetry uses latest-value semantics and does not need a sequence number.
+- Unpaired devices use broadcast discovery and a confirmed pairing handshake.
+- The mutually confirmed peer MAC and session identifier are stored in NVS.
+- Normal button, telemetry, and heartbeat traffic is unicast to the stored peer.
+- Packets include magic, version, type, sender role, payload length, session,
+  sequence number, and CRC-16/CCITT-FALSE.
+- Invalid, malformed, duplicate, stale, wrong-role, wrong-source, and
+  wrong-session packets are ignored before application state is changed.
+- ESP-NOW send completion drives up to two bounded retransmission attempts.
+- If updates arrive while a send is in progress, only the newest queued update
+  is retained, preserving low-latency latest-value behavior without an
+  unbounded queue.
 - Both devices send a heartbeat every 500 ms.
-- Communication currently uses broadcast addressing, so MAC addresses do not
-  need to be configured.
 
-Broadcast is convenient for setup, but it is not encrypted and can allow
-multiple nearby copies of this project to receive one another's packets. Paired
-unicast ESP-NOW peers are recommended for a finished wheel used near other
-ESP-NOW devices.
+On first boot, power one wheel and one receiver near each other. Pairing is
+automatic and normally completes within a second; no MAC address configuration
+is required. After pairing, both devices reconnect using their persisted NVS
+record.
+
+To erase pairing, hold wheel button 1 while powering the wheel and continue
+holding it for two seconds. The wheel sends three reset notifications to its
+stored receiver, clears its own record, and returns to discovery. Keep the
+receiver powered during this operation so it clears its matching record too.
+The reset button index and hold time are configured by
+`PAIRING_RESET_BUTTON_INDEX` and `PAIRING_RESET_HOLD_MS` in
+`include/wheel_config.h`.
+
+The application CRC adds two bytes. It supplements the Wi-Fi frame check and
+protects the complete application envelope. Forward-error-correction codes are
+not used: Wi-Fi normally discards corrupt frames before the receive callback,
+so unicast acknowledgment and retransmission recover the more relevant failure
+mode—a missing frame—with lower useful overhead.
 
 ## Verify operation
 
@@ -326,7 +347,12 @@ stream.
 
 ## Current limitations
 
-- ESP-NOW traffic is broadcast and unencrypted.
+- Pairing discovery is broadcast and normal unicast ESP-NOW traffic remains
+  unencrypted. Pairing provides peer isolation and reliability, not secrecy or
+  cryptographic authentication.
+- Pair reset should be performed while the stored receiver is powered. If every
+  reset notification is lost, its NVS record must be erased by reflashing with
+  flash erase before pairing it to a different wheel.
 - The receiver CDC and HID interfaces share the ESP32-S3 TinyUSB stack.
 - Only direct digital buttons are implemented; there are no analog axes,
   encoders, paddles with calibration, or button matrix support.
