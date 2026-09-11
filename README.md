@@ -9,9 +9,9 @@ The receiver appears to the PC as a composite USB device:
 - A USB HID gamepad for wheel buttons.
 - A USB CDC serial port for SimHub telemetry.
 
-The wheel currently supports eight direct buttons and a configurable WS2812B
-RPM strip. No display, rotary encoders, analog axes, or battery monitoring are
-implemented yet.
+The wheel supports two shifters, a 5-way switch with POV hat output, eight
+additional direct buttons, and a configurable WS2812B RPM strip. No display,
+rotary encoders, analog axes, or battery monitoring are implemented yet.
 
 ## Features
 
@@ -19,7 +19,7 @@ implemented yet.
 - Automatically paired bidirectional ESP-NOW communication on Wi-Fi channel 6.
 - CRC-16 packet validation, sequence checks, unicast delivery status, and
   bounded retransmission with latest-value coalescing.
-- Eight active-low wheel buttons exposed as USB gamepad buttons 1-8.
+- Eleven active-low wheel buttons plus an eight-direction USB POV hat.
 - Immediate button-change reports with a low-overhead 25 Hz safety refresh.
 - A 250 ms receiver failsafe that releases buttons if wireless input stops.
 - SimHub Custom Serial telemetry forwarded to the wheel.
@@ -35,7 +35,8 @@ implemented yet.
 - Two Waveshare ESP32-S3-Zero boards:
   - One for the wireless wheel.
   - One for the PC-connected receiver.
-- Up to eight normally-open momentary switches.
+- Two normally-open shifter switches, one 5-way switch, and eight additional
+  normally-open momentary switches.
 - A WS2812B-compatible LED strip; the default configuration uses 12 LEDs.
 - A regulated 5 V supply suitable for the LED strip.
 - A 330-470 ohm resistor for the LED data line.
@@ -57,6 +58,7 @@ implemented yet.
 | `src/receiver/main.cpp` | USB receiver and SimHub bridge firmware. |
 | `include/wheel_config.h` | User-adjustable pins, LED settings, and timing. |
 | `include/wheel_constants.h` | Values derived from the user configuration. |
+| `include/wheel_input.h` | Shared button and POV input model. |
 | `include/espnow_protocol.h` | Shared ESP-NOW packet definitions. |
 | `simhub/custom-serial-formula.txt` | NCalc telemetry expression for SimHub. |
 | `platformio.ini` | PlatformIO board and environment configuration. |
@@ -69,20 +71,28 @@ The buttons are active-low. Connect one terminal of each switch to its assigned
 GPIO and the other terminal to GND. The firmware enables the ESP32's internal
 pull-up resistors, so external pull-up resistors are not required.
 
-| Gamepad button | Default wheel GPIO |
-|---:|---:|
-| 1 | 2 |
-| 2 | 3 |
-| 3 | 4 |
-| 4 | 5 |
-| 5 | 6 |
-| 6 | 7 |
-| 7 | 8 |
-| 8 | 9 |
+| Control | HID mapping | Default wheel GPIO |
+|---|---:|---:|
+| Left shifter | Button 1 | 10 |
+| Right shifter | Button 2 | 11 |
+| 5-way center press | Button 3 | 12 |
+| Existing switch 1 | Button 4 | 2 |
+| Existing switch 2 | Button 5 | 3 |
+| Existing switch 3 | Button 6 | 4 |
+| Existing switch 4 | Button 7 | 5 |
+| Existing switch 5 | Button 8 | 6 |
+| Existing switch 6 | Button 9 | 7 |
+| Existing switch 7 | Button 10 | 8 |
+| Existing switch 8 | Button 11 | 9 |
+| 5-way up | POV up | 13 |
+| 5-way right | POV right | 14 |
+| 5-way down | POV down | 15 |
+| 5-way left | POV left | 16 |
 
-Change the `BUTTON_PINS` array in `include/wheel_config.h` if different pins
-are needed. The current protocol carries a 16-bit button mask, but the default
-firmware configuration defines eight physical buttons.
+Change `BUTTON_PINS` or the `POV_*_PIN` constants in `include/wheel_config.h` if
+different pins are needed. Adjacent POV contacts produce diagonal directions.
+Opposing contacts cancel on that axis; for example, up + down is neutral while
+up + down + right resolves to right.
 
 ### WS2812B RPM strip
 
@@ -133,6 +143,10 @@ The project contains two PlatformIO environments:
 Both environments are based on `esp32-s3-devkitc-1` with settings adjusted for
 the Waveshare ESP32-S3-Zero's 4 MB flash and 2 MB OPI PSRAM. The receiver uses
 TinyUSB device mode so CDC serial and HID gamepad can coexist.
+
+Packets use protocol version 6, which combines gear-aware telemetry with the
+expanded button and POV input payload. Flash both boards after updating;
+version 6 firmware intentionally rejects packets from older firmware.
 
 ## First-time build and upload
 
@@ -187,7 +201,7 @@ packets to the wheel.
 Copy and paste this complete NCalc expression into the SimHub update message:
 
 ```text
-'T;' + format(isnull([DataCorePlugin.GameData.NewData.Rpms],0),'0') + ';' + format(isnull([DataCorePlugin.GameData.NewData.CarSettings_CurrentDisplayedRPMPercent],0),'0.00') + ';' + format(isnull([DataCorePlugin.GameData.NewData.CarSettings_RedLineRPM],0),'0') + ';' + format(isnull([DataCorePlugin.GameData.NewData.CarSettings_RedLineDisplayedPercent],0),'0.00') + ';' + format(isnull([DataCorePlugin.GameData.NewData.CarSettings_MaxRPM],0),'0') + ';' + format(isnull([DataCorePlugin.GameData.NewData.CarSettings_MinimumShownRPM],0),'0') + ';' + format(isnull([DataCorePlugin.GameData.NewData.CarSettings_RPMRedLineReached],0),'0') + ';' + format(isnull([DataCorePlugin.GameData.NewData.CarSettings_RPMShiftLight1],0),'0.000') + ';' + format(isnull([DataCorePlugin.GameData.NewData.CarSettings_RPMShiftLight2],0),'0.000') + ';' + isnull([DataCorePlugin.GameData.NewData.Gear],'N') + '\n'
+'T;' + format(isnull([DataCorePlugin.GameData.NewData.Rpms],0),'0') + ';' + format(isnull([DataCorePlugin.GameData.NewData.CarSettings_CurrentDisplayedRPMPercent],0),'0.00') + ';' + format(isnull([DataCorePlugin.GameData.NewData.CarSettings_RedLineRPM],0),'0') + ';' + format(isnull([DataCorePlugin.GameData.NewData.CarSettings_RedLineDisplayedPercent],0),'0.00') + ';' + format(isnull([DataCorePlugin.GameData.NewData.CarSettings_MaxRPM],0),'0') + ';' + format(isnull([DataCorePlugin.GameData.NewData.CarSettings_MinimumShownRPM],0),'0') + ';' + format(isnull([DataCorePlugin.GameData.NewData.CarSettings_RPMRedLineReached],0),'0') + ';' + format(isnull([DataCorePlugin.GameData.NewData.CarSettings_RPMShiftLight1],0),'0.000') + ';' + format(isnull([DataCorePlugin.GameData.NewData.CarSettings_RPMShiftLight2],0),'0.000') + ';' + format(isnull([DataCorePlugin.GameData.CarSettings_CurrentGearRedLineRPM],0),'0') + ';' + isnull([DataCorePlugin.GameData.NewData.Gear],'N') + '\n'
 ```
 
 The same expression is kept as a copy-friendly single line in
@@ -196,7 +210,7 @@ The same expression is kept as a copy-friendly single line in
 The serial message format is:
 
 ```text
-T;<rpm>;<display percent>;<redline rpm>;<redline percent>;<maximum>;<minimum>;<redline reached>;<shift 1 progress>;<shift 2 progress>;<gear>\n
+T;<rpm>;<display percent>;<redline rpm>;<redline percent>;<maximum>;<minimum>;<redline reached>;<shift 1 progress>;<shift 2 progress>;<current gear redline rpm>;<gear>\n
 ```
 
 Do not configure a serial-monitor application on the receiver's CDC port while
@@ -237,8 +251,9 @@ and peripheral overhead.
 - The complete state is repeated at 25 Hz as protection against packet loss.
 - The receiver sends changed states to USB HID immediately and repeats the state
   at the same 25 Hz safety rate.
-- If no wheel input packet arrives for 250 ms while a button is held, the
-  receiver releases every HID button to prevent a stuck control.
+- If no wheel input packet arrives for 250 ms while an input is active, the
+  receiver releases every HID button and centers the POV to prevent a stuck
+  control.
 
 Change `INPUT_SAFETY_REFRESH_RATE_HZ` in `include/wheel_config.h` to adjust the
 periodic refresh. The chosen rate must be from 1 through 1000 Hz and divide
@@ -266,12 +281,13 @@ automatic and normally completes within a second; no MAC address configuration
 is required. After pairing, both devices reconnect using their persisted NVS
 record.
 
-To erase pairing, hold wheel button 1 while powering the wheel and continue
+To erase pairing, hold wheel button 4 (the existing switch on GPIO 2) while
+powering the wheel and continue
 holding it for two seconds. The wheel sends three reset notifications to its
 stored receiver, clears its own record, and returns to discovery. Keep the
 receiver powered during this operation so it clears its matching record too.
-The reset button index and hold time are configured by
-`PAIRING_RESET_BUTTON_INDEX` and `PAIRING_RESET_HOLD_MS` in
+The reset pin and hold time are configured by `PAIRING_RESET_PIN` and
+`PAIRING_RESET_HOLD_MS` in
 `include/wheel_config.h`.
 
 The application CRC adds two bytes. It supplements the Wi-Fi frame check and
@@ -285,12 +301,14 @@ mode—a missing frame—with lower useful overhead.
 1. Power both boards.
 2. Confirm that the wheel strip performs its red startup flashes.
 3. Open the operating system's game-controller test panel.
-4. Press each wheel button and confirm that gamepad buttons 1-8 respond.
-5. Start SimHub and connect the configured Custom Serial device.
-6. Start a supported game or use SimHub's available telemetry-test features.
-7. Confirm that the green and yellow sections fill with shift-light progress.
-8. Confirm that the red section responds near the top of the displayed RPM
-   range and that the strip flashes blue when redline is reported.
+4. Press each wheel button and confirm that gamepad buttons 1-11 respond.
+5. Move the 5-way switch through cardinal and diagonal directions and confirm
+   that the POV hat responds; confirm its center press reports button 3.
+6. Start SimHub and connect the configured Custom Serial device.
+7. Start a supported game or use SimHub's available telemetry-test features.
+8. Confirm that the green, yellow, and red sections progressively fill between
+   50% and 90% of the current gear's redline RPM.
+9. Confirm that the strip flashes blue when redline is reported.
 
 There is intentionally no serial debug output. This keeps the receiver's CDC
 connection dedicated to SimHub and avoids mixing diagnostic text into its data
@@ -358,10 +376,9 @@ stream.
   reset notification is lost, its NVS record must be erased by reflashing with
   flash erase before pairing it to a different wheel.
 - The receiver CDC and HID interfaces share the ESP32-S3 TinyUSB stack.
-- Only direct digital buttons are implemented; there are no analog axes,
-  encoders, paddles with calibration, or button matrix support.
+- Only direct digital inputs are implemented; there are no analog axes,
+  encoders, analog paddles with calibration, or button matrix support.
 - No wheel display or battery telemetry is implemented.
-- Telemetry remains displayed until replaced; there is no stale-data blanking.
 
 ## AI-assisted development disclaimer
 

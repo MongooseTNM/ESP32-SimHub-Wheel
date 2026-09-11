@@ -3,11 +3,11 @@
 #include <Arduino.h>
 
 #include "wheel_config.h"
+#include "wheel_input.h"
 
 namespace WheelConstants {
 
-constexpr size_t BUTTON_COUNT =
-    sizeof(WheelConfig::BUTTON_PINS) / sizeof(WheelConfig::BUTTON_PINS[0]);
+constexpr size_t BUTTON_COUNT = WheelInput::BUTTON_COUNT;
 constexpr uint32_t INPUT_SAFETY_REFRESH_INTERVAL_US =
     1000000UL / WheelConfig::INPUT_SAFETY_REFRESH_RATE_HZ;
 

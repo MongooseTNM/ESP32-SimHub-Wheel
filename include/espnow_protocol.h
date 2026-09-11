@@ -9,7 +9,7 @@
 namespace WheelProtocol {
 
 constexpr uint16_t MAGIC = 0x5347;  // "SG" (sim gear)
-constexpr uint8_t VERSION = 5;
+constexpr uint8_t VERSION = 6;
 constexpr uint8_t ESPNOW_CHANNEL = 6;
 constexpr uint32_t HEARTBEAT_INTERVAL_MS = 500;
 constexpr uint32_t LINK_TIMEOUT_MS = 2000;
@@ -81,6 +81,7 @@ struct __attribute__((packed)) TelemetryPayload {
 
 struct __attribute__((packed)) WheelInputPayload {
   uint16_t buttonMask;
+  uint8_t pov;
 };
 
 template <typename Payload>
@@ -101,31 +102,31 @@ constexpr size_t MAX_PACKET_SIZE = sizeof(TelemetryPacket);
 
 static_assert(std::is_trivially_copyable<PacketHeader>::value,
               "Protocol packets must be trivially copyable");
-static_assert(sizeof(PacketHeader) == 12, "Protocol v4 header size changed");
+static_assert(sizeof(PacketHeader) == 12, "Protocol v6 header size changed");
 static_assert(sizeof(DiscoveryPayload) == 4,
-              "Protocol v4 discovery payload size changed");
+              "Protocol v6 discovery payload size changed");
 static_assert(sizeof(PairingPayload) == 8,
-              "Protocol v4 pairing payload size changed");
+              "Protocol v6 pairing payload size changed");
 static_assert(sizeof(PairResetPayload) == 4,
-              "Protocol v4 reset payload size changed");
+              "Protocol v6 reset payload size changed");
 static_assert(sizeof(HeartbeatPayload) == 4,
-              "Protocol v4 heartbeat payload size changed");
+              "Protocol v6 heartbeat payload size changed");
 static_assert(sizeof(TelemetryPayload) == 23,
-              "Protocol v5 telemetry payload size changed");
-static_assert(sizeof(WheelInputPayload) == 2,
-              "Protocol v4 wheel input payload size changed");
+              "Protocol v6 telemetry payload size changed");
+static_assert(sizeof(WheelInputPayload) == 3,
+              "Protocol v6 wheel input payload size changed");
 static_assert(sizeof(DiscoveryPacket) == 18,
-              "Protocol v4 discovery packet size changed");
+              "Protocol v6 discovery packet size changed");
 static_assert(sizeof(PairingPacket) == 22,
-              "Protocol v4 pairing packet size changed");
+              "Protocol v6 pairing packet size changed");
 static_assert(sizeof(PairResetPacket) == 18,
-              "Protocol v4 reset packet size changed");
+              "Protocol v6 reset packet size changed");
 static_assert(sizeof(HeartbeatPacket) == 18,
-              "Protocol v4 heartbeat packet size changed");
+              "Protocol v6 heartbeat packet size changed");
 static_assert(sizeof(TelemetryPacket) == 37,
-              "Protocol v5 telemetry packet size changed");
-static_assert(sizeof(WheelInputPacket) == 16,
-              "Protocol v4 wheel input packet size changed");
+              "Protocol v6 telemetry packet size changed");
+static_assert(sizeof(WheelInputPacket) == 17,
+              "Protocol v6 wheel input packet size changed");
 static_assert(MAX_PACKET_SIZE == sizeof(TelemetryPacket),
               "Maximum packet size must track the largest packet");
 static_assert(sizeof(DiscoveryPacket) <= MAX_PACKET_SIZE &&
