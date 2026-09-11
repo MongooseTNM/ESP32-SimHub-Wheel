@@ -24,4 +24,12 @@ constexpr uint16_t INPUT_SAFETY_REFRESH_RATE_HZ = 25;
 
 constexpr uint32_t SHIFT_FLASH_INTERVAL_MS = 80;
 
+// Hold this wheel button during boot to erase the stored peer and re-enter
+// automatic pairing. The index is zero-based in BUTTON_PINS.
+constexpr uint8_t PAIRING_RESET_BUTTON_INDEX = 0;
+constexpr uint32_t PAIRING_RESET_HOLD_MS = 2000;
+
+// Clear RPM output if fresh telemetry stops arriving.
+constexpr uint32_t TELEMETRY_STALE_TIMEOUT_MS = 500;
+
 }  // namespace WheelConfig
