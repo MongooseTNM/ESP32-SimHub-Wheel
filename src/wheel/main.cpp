@@ -39,7 +39,13 @@ uint32_t lastTelemetryMs = 0;
 uint16_t lastTelemetrySequence = 0;
 bool haveTelemetrySequence = false;
 volatile bool paired = false;
+volatile bool pairingLockedUntilRestart = false;
+volatile bool pairingSuccessPending = false;
 uint32_t lastReceiverUptimeMs = 0;
+
+bool pairingSuccessActive = false;
+uint8_t pairingSuccessPhase = 0;
+uint32_t pairingSuccessPhaseStartedMs = 0;
 
 bool sameAddress(const uint8_t *left, const uint8_t *right) {
   return left != nullptr && right != nullptr && memcmp(left, right, 6) == 0;
@@ -94,7 +100,8 @@ void onDataReceived(const uint8_t *source, const uint8_t *data, const int length
                                      DeviceRole::Receiver)) {
     PairingPacket packet{};
     memcpy(&packet, data, sizeof(packet));
-    if (!paired && packet.payload.wheelNonce == wheelNonce) {
+    if (!paired && !pairingLockedUntilRestart &&
+        packet.payload.wheelNonce == wheelNonce) {
       memcpy(peerAddress, source, sizeof(peerAddress));
       receiverNonce = packet.payload.receiverNonce;
       sessionId = deriveSessionId(wheelNonce, receiverNonce);
@@ -104,20 +111,29 @@ void onDataReceived(const uint8_t *source, const uint8_t *data, const int length
     }
     return;
   }
-  if (validatePacket<PairingPayload>(data, length, MessageType::PairCommit,
+  if (!pairingLockedUntilRestart &&
+      validatePacket<PairingPayload>(data, length, MessageType::PairCommit,
                                      DeviceRole::Receiver, sessionId, true) &&
       sameAddress(source, peerAddress)) {
     PairingPacket packet{};
     memcpy(&packet, data, sizeof(packet));
     if (packet.payload.wheelNonce == wheelNonce || paired) {
+      const bool pairingJustCompleted = !paired;
       paired = true;
       savePairing();
       sendDirect(peerAddress, MessageType::PairConfirmed, sessionId,
                  packet.payload);
+      if (pairingJustCompleted) pairingSuccessPending = true;
     }
     return;
   }
   if (!paired || !sameAddress(source, peerAddress)) return;
+  if (validatePacket<PairResetPayload>(data, length, MessageType::PairReset,
+                                       DeviceRole::Receiver, sessionId, true)) {
+    pairingLockedUntilRestart = true;
+    clearPairing();
+    return;
+  }
   if (validatePacket<HeartbeatPayload>(data, length, MessageType::Heartbeat,
                                        DeviceRole::Receiver, sessionId, true)) {
     HeartbeatPacket packet{};
@@ -256,13 +272,56 @@ void showRpmLedsIfChanged() {
   FastLED.show();
 }
 
+void renderSolidLeds(const CRGB color) {
+  fill_solid(nextRpmLeds, WheelConfig::RPM_LED_COUNT, color);
+  showRpmLedsIfChanged();
+}
+
+bool renderPairingStatus(const uint32_t now) {
+  if (pairingSuccessPending) {
+    pairingSuccessPending = false;
+    pairingSuccessActive = true;
+    pairingSuccessPhase = 0;
+    pairingSuccessPhaseStartedMs = now;
+  }
+
+  if (pairingSuccessActive) {
+    const uint8_t phaseCount =
+        WheelConfig::PAIRING_SUCCESS_FLASH_COUNT * 2;
+    while (pairingSuccessPhase < phaseCount) {
+      const uint32_t phaseDurationMs =
+          (pairingSuccessPhase % 2 == 0)
+              ? WheelConfig::PAIRING_SUCCESS_FLASH_ON_MS
+              : WheelConfig::PAIRING_SUCCESS_FLASH_OFF_MS;
+      if (now - pairingSuccessPhaseStartedMs < phaseDurationMs) break;
+      pairingSuccessPhaseStartedMs += phaseDurationMs;
+      ++pairingSuccessPhase;
+    }
+
+    if (pairingSuccessPhase < phaseCount) {
+      renderSolidLeds(pairingSuccessPhase % 2 == 0 ? CRGB::Green
+                                                   : CRGB::Black);
+      return true;
+    }
+    pairingSuccessActive = false;
+  }
+
+  if (!paired) {
+    if (pairingLockedUntilRestart) {
+      renderSolidLeds(CRGB::Black);
+      return true;
+    }
+    const bool flashOn =
+        (now / WheelConfig::PAIRING_SEARCH_FLASH_INTERVAL_MS) % 2 == 0;
+    renderSolidLeds(flashOn ? CRGB::Blue : CRGB::Black);
+    return true;
+  }
+
+  return false;
+}
+
 void renderRpmLeds(const TelemetryPayload &telemetry, const bool flashOn) {
   fill_solid(nextRpmLeds, WheelConfig::RPM_LED_COUNT, CRGB::Black);
-
-  if (telemetry.maxRpm == 0 || telemetry.displayedRpmPercentX100 == 0) {
-    showRpmLedsIfChanged();
-    return;
-  }
 
   // SimHub owns the redline trigger through CarSettings_RPMRedLineReached.
   if (telemetry.rpmRedLineReached != 0) {
@@ -272,41 +331,34 @@ void renderRpmLeds(const TelemetryPayload &telemetry, const bool flashOn) {
     return;
   }
 
-  const uint16_t firstLedEnd = WheelConfig::RPM_LED_COUNT / 3;
-  const uint16_t secondLedEnd = (WheelConfig::RPM_LED_COUNT * 2) / 3;
-  const auto segmentCount = [](const uint16_t progressX1000,
-                               const uint16_t ledCount) -> uint16_t {
-    const uint16_t clamped = min<uint16_t>(progressX1000, 1000);
-    return static_cast<uint16_t>((static_cast<uint32_t>(clamped) * ledCount +
-                                  999) /
-                                 1000);
-  };
-
-  const uint16_t firstLit = segmentCount(
-      telemetry.shiftLight1ProgressX1000, firstLedEnd);
-  const uint16_t secondLit = segmentCount(
-      telemetry.shiftLight2ProgressX1000, secondLedEnd - firstLedEnd);
-
-  uint16_t thirdProgressX1000 = 0;
-  if (telemetry.redLineDisplayedPercentX100 < 10000) {
-    const uint32_t amountPastRedline =
-        telemetry.displayedRpmPercentX100 -
-        min(telemetry.displayedRpmPercentX100,
-            telemetry.redLineDisplayedPercentX100);
-    thirdProgressX1000 = static_cast<uint16_t>(min<uint32_t>(
-        1000, amountPastRedline * 1000 /
-                  (10000 - telemetry.redLineDisplayedPercentX100)));
+  static_assert(WheelConfig::RPM_LED_FILL_START_PERCENT < 100,
+                "RPM LED fill start must be below 100 percent");
+  static_assert(WheelConfig::RPM_LED_FULL_BELOW_REDLINE_PERCENT < 100,
+                "RPM LED full offset must be below 100 percent");
+  static_assert(WheelConfig::RPM_LED_FILL_START_PERCENT <
+                    100 - WheelConfig::RPM_LED_FULL_BELOW_REDLINE_PERCENT,
+                "RPM LED fill start must be below the full threshold");
+  if (telemetry.currentGearRedLineRpm == 0) {
+    showRpmLedsIfChanged();
+    return;
   }
-  const uint16_t thirdLit = segmentCount(
-      thirdProgressX1000, WheelConfig::RPM_LED_COUNT - secondLedEnd);
 
-  for (uint16_t index = 0; index < firstLit; ++index) {
-    nextRpmLeds[index] = colorForLed(index);
-  }
-  for (uint16_t index = firstLedEnd; index < firstLedEnd + secondLit; ++index) {
-    nextRpmLeds[index] = colorForLed(index);
-  }
-  for (uint16_t index = secondLedEnd; index < secondLedEnd + thirdLit; ++index) {
+  const uint32_t fillStartRpm =
+      static_cast<uint32_t>(telemetry.currentGearRedLineRpm) *
+      WheelConfig::RPM_LED_FILL_START_PERCENT / 100;
+  const uint32_t fillFullRpm =
+      static_cast<uint32_t>(telemetry.currentGearRedLineRpm) *
+      (100 - WheelConfig::RPM_LED_FULL_BELOW_REDLINE_PERCENT) / 100;
+  const uint32_t clampedRpm =
+      min<uint32_t>(max<uint32_t>(telemetry.rpm, fillStartRpm), fillFullRpm);
+  const uint32_t amountAboveStartRpm = clampedRpm - fillStartRpm;
+  const uint32_t fillRangeRpm = fillFullRpm - fillStartRpm;
+  const uint16_t litCount = static_cast<uint16_t>(min<uint32_t>(
+      WheelConfig::RPM_LED_COUNT,
+      (amountAboveStartRpm * WheelConfig::RPM_LED_COUNT + fillRangeRpm - 1) /
+          fillRangeRpm));
+
+  for (uint16_t index = 0; index < litCount; ++index) {
     nextRpmLeds[index] = colorForLed(index);
   }
   showRpmLedsIfChanged();
@@ -362,15 +414,18 @@ void setup() {
     ESP.restart();
   }
   if (paired && !addPeer(peerAddress)) clearPairing();
-  if (resetRequested && paired) {
-    const auto resetPacket = makePacket(
-        MessageType::PairReset, DeviceRole::Wheel, sessionId, sequenceNumber++,
-        PairResetPayload{sessionId});
-    for (uint8_t attempt = 0; attempt < 3; ++attempt) {
-      esp_now_send(peerAddress,
-                   reinterpret_cast<const uint8_t *>(&resetPacket),
-                   sizeof(resetPacket));
-      delay(20);
+  if (resetRequested) {
+    pairingLockedUntilRestart = true;
+    if (paired) {
+      const auto resetPacket = makePacket(
+          MessageType::PairReset, DeviceRole::Wheel, sessionId,
+          sequenceNumber++, PairResetPayload{sessionId});
+      for (uint8_t attempt = 0; attempt < 3; ++attempt) {
+        esp_now_send(peerAddress,
+                     reinterpret_cast<const uint8_t *>(&resetPacket),
+                     sizeof(resetPacket));
+        delay(20);
+      }
     }
     clearPairing();
   }
@@ -379,7 +434,8 @@ void setup() {
 void loop() {
   const uint32_t now = millis();
   reliableSender.service(now);
-  if (!paired && now - lastDiscoveryMs >= DISCOVERY_INTERVAL_MS) {
+  if (!paired && !pairingLockedUntilRestart &&
+      now - lastDiscoveryMs >= DISCOVERY_INTERVAL_MS) {
     lastDiscoveryMs = now;
     sendDiscovery();
   }
@@ -388,6 +444,8 @@ void loop() {
   static TelemetryPayload activeTelemetry{};
   static bool haveTelemetry = false;
   static bool previousFlashOn = false;
+  static bool pairingStatusWasActive = false;
+  bool rpmRenderNeeded = false;
   const bool flashOn =
       (now / WheelConfig::SHIFT_FLASH_INTERVAL_MS) % 2 == 0;
   const bool flashPhaseChanged =
@@ -398,18 +456,24 @@ void loop() {
     telemetryPending = false;
     activeTelemetry = latestTelemetry;
     haveTelemetry = true;
-    renderRpmLeds(activeTelemetry, flashOn);
+    rpmRenderNeeded = true;
     previousFlashOn = flashOn;
   } else if (flashPhaseChanged) {
-    renderRpmLeds(activeTelemetry, flashOn);
+    rpmRenderNeeded = true;
     previousFlashOn = flashOn;
   }
   if (haveTelemetry &&
       now - lastTelemetryMs >= WheelConfig::TELEMETRY_STALE_TIMEOUT_MS) {
     haveTelemetry = false;
     activeTelemetry = {};
-    renderRpmLeds(activeTelemetry, false);
+    rpmRenderNeeded = true;
   }
+
+  const bool pairingStatusActive = renderPairingStatus(now);
+  if (!pairingStatusActive && (rpmRenderNeeded || pairingStatusWasActive)) {
+    renderRpmLeds(activeTelemetry, flashOn);
+  }
+  pairingStatusWasActive = pairingStatusActive;
 
   if (now - lastHeartbeatSentMs >= WheelProtocol::HEARTBEAT_INTERVAL_MS) {
     lastHeartbeatSentMs = now;

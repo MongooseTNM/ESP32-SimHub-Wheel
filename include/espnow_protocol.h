@@ -9,7 +9,7 @@
 namespace WheelProtocol {
 
 constexpr uint16_t MAGIC = 0x5347;  // "SG" (sim gear)
-constexpr uint8_t VERSION = 4;
+constexpr uint8_t VERSION = 5;
 constexpr uint8_t ESPNOW_CHANNEL = 6;
 constexpr uint32_t HEARTBEAT_INTERVAL_MS = 500;
 constexpr uint32_t LINK_TIMEOUT_MS = 2000;
@@ -74,6 +74,7 @@ struct __attribute__((packed)) TelemetryPayload {
   uint16_t minimumShownRpm;
   uint16_t shiftLight1ProgressX1000;
   uint16_t shiftLight2ProgressX1000;
+  uint16_t currentGearRedLineRpm;
   uint8_t rpmRedLineReached;
   char gear[4];
 };
@@ -109,8 +110,8 @@ static_assert(sizeof(PairResetPayload) == 4,
               "Protocol v4 reset payload size changed");
 static_assert(sizeof(HeartbeatPayload) == 4,
               "Protocol v4 heartbeat payload size changed");
-static_assert(sizeof(TelemetryPayload) == 21,
-              "Protocol v4 telemetry payload size changed");
+static_assert(sizeof(TelemetryPayload) == 23,
+              "Protocol v5 telemetry payload size changed");
 static_assert(sizeof(WheelInputPayload) == 2,
               "Protocol v4 wheel input payload size changed");
 static_assert(sizeof(DiscoveryPacket) == 18,
@@ -121,8 +122,8 @@ static_assert(sizeof(PairResetPacket) == 18,
               "Protocol v4 reset packet size changed");
 static_assert(sizeof(HeartbeatPacket) == 18,
               "Protocol v4 heartbeat packet size changed");
-static_assert(sizeof(TelemetryPacket) == 35,
-              "Protocol v4 telemetry packet size changed");
+static_assert(sizeof(TelemetryPacket) == 37,
+              "Protocol v5 telemetry packet size changed");
 static_assert(sizeof(WheelInputPacket) == 16,
               "Protocol v4 wheel input packet size changed");
 static_assert(MAX_PACKET_SIZE == sizeof(TelemetryPacket),
@@ -168,10 +169,11 @@ static_assert(sizeof(TelemetryPayload::rpm) == 2 &&
                   sizeof(TelemetryPayload::redLineRpm) == 2 &&
                   sizeof(TelemetryPayload::redLineDisplayedPercentX100) == 2 &&
                   sizeof(TelemetryPayload::maxRpm) == 2 &&
-                  sizeof(TelemetryPayload::minimumShownRpm) == 2 &&
-                  sizeof(TelemetryPayload::shiftLight1ProgressX1000) == 2 &&
-                  sizeof(TelemetryPayload::shiftLight2ProgressX1000) == 2,
-              "Protocol telemetry quantities must remain 16-bit");
+                   sizeof(TelemetryPayload::minimumShownRpm) == 2 &&
+                   sizeof(TelemetryPayload::shiftLight1ProgressX1000) == 2 &&
+                   sizeof(TelemetryPayload::shiftLight2ProgressX1000) == 2 &&
+                   sizeof(TelemetryPayload::currentGearRedLineRpm) == 2,
+               "Protocol telemetry quantities must remain 16-bit");
 
 // CRC-16/CCITT-FALSE: polynomial 0x1021, initial value 0xFFFF.
 inline uint16_t crc16(const uint8_t *data, const size_t length) {

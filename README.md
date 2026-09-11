@@ -204,17 +204,21 @@ SimHub is using it. Only one application should own the port at a time.
 
 ## RPM LED behavior
 
-The LED bar uses SimHub's current per-car settings rather than fixed RPM
-thresholds in the firmware:
+The LED bar smoothly fills from left to right using current RPM relative to
+SimHub's `CarSettings_CurrentGearRedLineRPM` value:
 
-- `CarSettings_RPMShiftLight1` progresses from 0 to 1 and fills the first third
-  of the strip in green.
-- `CarSettings_RPMShiftLight2` progresses from 0 to 1 and fills the second third
-  in yellow.
-- The final red third uses `CarSettings_CurrentDisplayedRPMPercent` relative to
-  `CarSettings_RedLineDisplayedPercent` and maximum displayed RPM.
+- At or below 50% of the current gear's redline RPM, every LED is off.
+- Between 50% and 90% of current-gear redline, LEDs progressively illuminate
+  across the whole strip.
+- At or above 90% of current-gear redline, the whole strip is illuminated.
+- The strip retains fixed green, yellow, and red thirds as it fills.
 - `CarSettings_RPMRedLineReached` overrides normal rendering and flashes the
   full strip blue.
+
+The lower bound can be adjusted with `RPM_LED_FILL_START_PERCENT`. The upper
+bound is current-gear redline minus `RPM_LED_FULL_BELOW_REDLINE_PERCENT`; its
+default of 10 means the strip is full at 90% of current-gear redline. Both are
+configured in `include/wheel_config.h`.
 
 With 12 LEDs, each color section contains four LEDs. Counts that do not divide
 evenly by three are distributed using integer section boundaries.

@@ -6,20 +6,20 @@
 
 using namespace WheelProtocol;
 
-void test_protocol_v4_packed_sizes() {
+void test_protocol_v5_packed_sizes() {
   TEST_ASSERT_EQUAL_UINT32(12, sizeof(PacketHeader));
   TEST_ASSERT_EQUAL_UINT32(4, sizeof(DiscoveryPayload));
   TEST_ASSERT_EQUAL_UINT32(8, sizeof(PairingPayload));
   TEST_ASSERT_EQUAL_UINT32(4, sizeof(PairResetPayload));
   TEST_ASSERT_EQUAL_UINT32(4, sizeof(HeartbeatPayload));
-  TEST_ASSERT_EQUAL_UINT32(21, sizeof(TelemetryPayload));
+  TEST_ASSERT_EQUAL_UINT32(23, sizeof(TelemetryPayload));
   TEST_ASSERT_EQUAL_UINT32(2, sizeof(WheelInputPayload));
 
   TEST_ASSERT_EQUAL_UINT32(18, sizeof(DiscoveryPacket));
   TEST_ASSERT_EQUAL_UINT32(22, sizeof(PairingPacket));
   TEST_ASSERT_EQUAL_UINT32(18, sizeof(PairResetPacket));
   TEST_ASSERT_EQUAL_UINT32(18, sizeof(HeartbeatPacket));
-  TEST_ASSERT_EQUAL_UINT32(35, sizeof(TelemetryPacket));
+  TEST_ASSERT_EQUAL_UINT32(37, sizeof(TelemetryPacket));
   TEST_ASSERT_EQUAL_UINT32(16, sizeof(WheelInputPacket));
   TEST_ASSERT_EQUAL_UINT32(sizeof(TelemetryPacket), MAX_PACKET_SIZE);
 }
@@ -76,7 +76,7 @@ void test_session_derivation_is_stable_and_nonzero() {
 
 int main(int, char **) {
   UNITY_BEGIN();
-  RUN_TEST(test_protocol_v4_packed_sizes);
+  RUN_TEST(test_protocol_v5_packed_sizes);
   RUN_TEST(test_crc_standard_vector);
   RUN_TEST(test_packet_validation_and_corruption_rejection);
   RUN_TEST(test_wrong_metadata_and_length_are_rejected);

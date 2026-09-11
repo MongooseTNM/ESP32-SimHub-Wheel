@@ -1,4 +1,5 @@
 #include <Arduino.h>
+#include <FastLED.h>
 #include <Preferences.h>
 #include <USB.h>
 #include <USBHIDGamepad.h>
@@ -12,6 +13,7 @@
 #include <cstring>
 
 #include "espnow_protocol.h"
+#include "receiver_config.h"
 #include "reliable_sender.h"
 #include "wheel_config.h"
 #include "wheel_constants.h"
@@ -23,6 +25,7 @@ constexpr uint8_t BROADCAST_ADDRESS[] = {0xFF, 0xFF, 0xFF,
                                          0xFF, 0xFF, 0xFF};
 
 USBHIDGamepad gamepad;
+CRGB statusLed[1];
 
 uint16_t sequenceNumber = 0;
 uint32_t lastHeartbeatSentMs = 0;
@@ -45,9 +48,14 @@ uint32_t pairingStartedMs = 0;
 uint16_t lastInputSequence = 0;
 bool haveInputSequence = false;
 volatile bool paired = false;
+volatile bool pairingLockedUntilRestart = false;
+volatile bool pairingSuccessPending = false;
 uint32_t lastWheelUptimeMs = 0;
 enum class PairingStage : uint8_t { Idle, RequestSent, CommitSent };
 volatile PairingStage pairingStage = PairingStage::Idle;
+bool pairingSuccessActive = false;
+uint8_t pairingSuccessPhase = 0;
+uint32_t pairingSuccessPhaseStartedMs = 0;
 
 bool sameAddress(const uint8_t *left, const uint8_t *right) {
   return left != nullptr && right != nullptr && memcmp(left, right, 6) == 0;
@@ -99,7 +107,8 @@ void sendDirect(const uint8_t *address, const MessageType type,
 }
 
 void onDataReceived(const uint8_t *source, const uint8_t *data, const int length) {
-  if (!paired && validatePacket<DiscoveryPayload>(
+  if (!paired && !pairingLockedUntilRestart &&
+      validatePacket<DiscoveryPayload>(
                      data, length, MessageType::Discovery, DeviceRole::Wheel)) {
     DiscoveryPacket packet{};
     memcpy(&packet, data, sizeof(packet));
@@ -115,7 +124,8 @@ void onDataReceived(const uint8_t *source, const uint8_t *data, const int length
     pairingStage = PairingStage::RequestSent;
     return;
   }
-  if (!paired && sameAddress(source, peerAddress) &&
+  if (!paired && !pairingLockedUntilRestart &&
+      sameAddress(source, peerAddress) &&
       validatePacket<PairingPayload>(data, length, MessageType::PairAccept,
                                      DeviceRole::Wheel, sessionId, true)) {
     PairingPacket packet{};
@@ -125,17 +135,21 @@ void onDataReceived(const uint8_t *source, const uint8_t *data, const int length
     pairingStage = PairingStage::CommitSent;
     return;
   }
-  if (!paired && sameAddress(source, peerAddress) &&
+  if (!paired && !pairingLockedUntilRestart &&
+      sameAddress(source, peerAddress) &&
       validatePacket<PairingPayload>(data, length, MessageType::PairConfirmed,
                                      DeviceRole::Wheel, sessionId, true)) {
     paired = true;
     pairingStage = PairingStage::Idle;
     savePairing();
+    pairingSuccessPending = true;
     return;
   }
   if (!paired || !sameAddress(source, peerAddress)) return;
   if (validatePacket<PairResetPayload>(data, length, MessageType::PairReset,
                                        DeviceRole::Wheel, sessionId, true)) {
+    pairingLockedUntilRestart = true;
+    pairingStage = PairingStage::Idle;
     clearPairing();
     return;
   }
@@ -193,7 +207,8 @@ uint16_t parseClampedU16(const char *text, const uint32_t scale = 1) {
 
 bool parseAndSendTelemetry(char *line) {
   // T;<rpm>;<display %>;<redline rpm>;<redline %>;<max>;<minimum>;
-  //   <at redline>;<shift 1 progress>;<shift 2 progress>;<gear>
+  //   <at redline>;<shift 1 progress>;<shift 2 progress>;
+  //   <current gear redline rpm>;<gear>
   char *savePointer = nullptr;
   const char *prefix = strtok_r(line, ";", &savePointer);
   const char *rpm = strtok_r(nullptr, ";", &savePointer);
@@ -205,6 +220,7 @@ bool parseAndSendTelemetry(char *line) {
   const char *redLineReached = strtok_r(nullptr, ";", &savePointer);
   const char *shiftLight1Progress = strtok_r(nullptr, ";", &savePointer);
   const char *shiftLight2Progress = strtok_r(nullptr, ";", &savePointer);
+  const char *currentGearRedLineRpm = strtok_r(nullptr, ";", &savePointer);
   const char *gear = strtok_r(nullptr, ";", &savePointer);
 
   if (prefix == nullptr || strcmp(prefix, "T") != 0 || rpm == nullptr ||
@@ -212,7 +228,7 @@ bool parseAndSendTelemetry(char *line) {
       redLineDisplayedPercent == nullptr || maxRpm == nullptr ||
       minimumShownRpm == nullptr || redLineReached == nullptr ||
       shiftLight1Progress == nullptr || shiftLight2Progress == nullptr ||
-      gear == nullptr) {
+      currentGearRedLineRpm == nullptr || gear == nullptr) {
     return false;
   }
 
@@ -229,6 +245,7 @@ bool parseAndSendTelemetry(char *line) {
       parseClampedU16(shiftLight1Progress, 1000);
   telemetry.shiftLight2ProgressX1000 =
       parseClampedU16(shiftLight2Progress, 1000);
+  telemetry.currentGearRedLineRpm = parseClampedU16(currentGearRedLineRpm);
   telemetry.rpmRedLineReached = strcmp(redLineReached, "1") == 0;
   strncpy(telemetry.gear, gear, sizeof(telemetry.gear) - 1);
   const auto packet = makePacket(MessageType::Telemetry, DeviceRole::Receiver,
@@ -264,9 +281,71 @@ void sendGamepadReport(const uint16_t buttonMask) {
   gamepad.send(0, 0, 0, 0, 0, 0, 0, buttonMask);
   reportedButtonMask = buttonMask;
 }
+
+void showStatusLed(const CRGB color) {
+  if (statusLed[0] == color) return;
+  statusLed[0] = color;
+  FastLED.show();
+}
+
+void renderPairingStatus(const uint32_t now) {
+  if (pairingSuccessPending) {
+    pairingSuccessPending = false;
+    pairingSuccessActive = true;
+    pairingSuccessPhase = 0;
+    pairingSuccessPhaseStartedMs = now;
+  }
+
+  if (pairingSuccessActive) {
+    const uint8_t phaseCount =
+        WheelConfig::PAIRING_SUCCESS_FLASH_COUNT * 2;
+    while (pairingSuccessPhase < phaseCount) {
+      const uint32_t phaseDurationMs =
+          pairingSuccessPhase % 2 == 0
+              ? WheelConfig::PAIRING_SUCCESS_FLASH_ON_MS
+              : WheelConfig::PAIRING_SUCCESS_FLASH_OFF_MS;
+      if (now - pairingSuccessPhaseStartedMs < phaseDurationMs) break;
+      pairingSuccessPhaseStartedMs += phaseDurationMs;
+      ++pairingSuccessPhase;
+    }
+
+    if (pairingSuccessPhase < phaseCount) {
+      showStatusLed(pairingSuccessPhase % 2 == 0 ? CRGB::Green : CRGB::Black);
+      return;
+    }
+    pairingSuccessActive = false;
+  }
+
+  if (!paired && !pairingLockedUntilRestart) {
+    const bool flashOn =
+        (now / WheelConfig::PAIRING_SEARCH_FLASH_INTERVAL_MS) % 2 == 0;
+    showStatusLed(flashOn ? CRGB::Blue : CRGB::Black);
+    return;
+  }
+
+  showStatusLed(CRGB::Black);
+}
 }  // namespace
 
 void setup() {
+  FastLED.addLeds<WS2812B, ReceiverConfig::STATUS_LED_DATA_PIN, GRB>(statusLed,
+                                                                    1);
+  FastLED.setBrightness(ReceiverConfig::STATUS_LED_BRIGHTNESS);
+  statusLed[0] = CRGB::Black;
+  FastLED.show();
+
+  pinMode(ReceiverConfig::PAIRING_RESET_BUTTON_PIN, INPUT_PULLUP);
+  bool resetRequested = false;
+  if (digitalRead(ReceiverConfig::PAIRING_RESET_BUTTON_PIN) == LOW) {
+    const uint32_t heldFrom = millis();
+    while (digitalRead(ReceiverConfig::PAIRING_RESET_BUTTON_PIN) == LOW &&
+           millis() - heldFrom < ReceiverConfig::PAIRING_RESET_HOLD_MS) {
+      delay(10);
+    }
+    resetRequested =
+        millis() - heldFrom >= ReceiverConfig::PAIRING_RESET_HOLD_MS;
+  }
+
   Serial.begin(115200);
   gamepad.begin();
   USB.productName("ESP-NOW Sim Racing Wheel");
@@ -295,18 +374,35 @@ void setup() {
   }
   loadPairing();
   if (paired && !addPeer(peerAddress)) clearPairing();
+  if (resetRequested) {
+    pairingLockedUntilRestart = true;
+    if (paired) {
+      const auto resetPacket = makePacket(
+          MessageType::PairReset, DeviceRole::Receiver, sessionId,
+          sequenceNumber++, PairResetPayload{sessionId});
+      for (uint8_t attempt = 0; attempt < 3; ++attempt) {
+        esp_now_send(peerAddress,
+                     reinterpret_cast<const uint8_t *>(&resetPacket),
+                     sizeof(resetPacket));
+        delay(20);
+      }
+    }
+    clearPairing();
+  }
 }
 
 void loop() {
   const uint32_t serviceNow = millis();
   reliableSender.service(serviceNow);
-  if (!paired && pairingStage != PairingStage::Idle &&
+  if (!paired && !pairingLockedUntilRestart &&
+      pairingStage != PairingStage::Idle &&
       serviceNow - pairingStartedMs >= PAIRING_TIMEOUT_MS) {
     pairingStage = PairingStage::Idle;
     sessionId = 0;
     memset(peerAddress, 0, sizeof(peerAddress));
-  } else if (!paired && pairingStage != PairingStage::Idle &&
-      serviceNow - lastPairingSendMs >= PAIRING_RETRY_INTERVAL_MS) {
+  } else if (!paired && !pairingLockedUntilRestart &&
+             pairingStage != PairingStage::Idle &&
+             serviceNow - lastPairingSendMs >= PAIRING_RETRY_INTERVAL_MS) {
     const PairingPayload payload{wheelNonce, receiverNonce};
     sendDirect(peerAddress,
                pairingStage == PairingStage::RequestSent
@@ -319,6 +415,7 @@ void loop() {
   processSimHubSerial();
 
   const uint32_t now = millis();
+  renderPairingStatus(now);
   if (inputPending) {
     inputPending = false;
     const uint16_t buttonMask = receivedButtonMask;
