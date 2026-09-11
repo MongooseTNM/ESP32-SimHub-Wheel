@@ -10,6 +10,7 @@
 #include "reliable_sender.h"
 #include "wheel_config.h"
 #include "wheel_constants.h"
+#include "wheel_input.h"
 
 namespace {
 using namespace WheelProtocol;
@@ -24,9 +25,9 @@ TelemetryPayload latestTelemetry{};
 volatile bool telemetryPending = false;
 CRGB rpmLeds[WheelConfig::RPM_LED_COUNT];
 CRGB nextRpmLeds[WheelConfig::RPM_LED_COUNT];
-uint16_t rawButtonMask = 0;
-uint16_t debouncedButtonMask = 0;
-uint32_t buttonChangedAtMs[WheelConstants::BUTTON_COUNT]{};
+uint16_t rawContactMask = 0;
+uint16_t debouncedContactMask = 0;
+uint32_t contactChangedAtMs[WheelInput::CONTACT_COUNT]{};
 uint32_t lastButtonReportUs = 0;
 Preferences preferences;
 ReliableSender reliableSender;
@@ -169,48 +170,67 @@ void sendHeartbeat() {
   reliableSender.send(peerAddress, &packet, sizeof(packet));
 }
 
-uint16_t readButtonMask() {
+uint16_t readContactMask() {
   uint16_t mask = 0;
-  for (uint8_t index = 0; index < WheelConstants::BUTTON_COUNT; ++index) {
+  for (uint8_t index = 0; index < WheelInput::BUTTON_COUNT; ++index) {
     if (digitalRead(WheelConfig::BUTTON_PINS[index]) == LOW) {
       mask |= static_cast<uint16_t>(1U << index);
     }
   }
+  for (uint8_t index = 0; index < WheelInput::POV_DIRECTION_COUNT; ++index) {
+    if (digitalRead(WheelConfig::POV_PINS[index]) == LOW) {
+      mask |= static_cast<uint16_t>(1U << (WheelInput::BUTTON_COUNT + index));
+    }
+  }
   return mask;
+}
+
+WheelInput::Pov currentPov() {
+  const auto pressed = [](const uint8_t directionIndex) {
+    return (debouncedContactMask &
+            static_cast<uint16_t>(
+                1U << (WheelInput::BUTTON_COUNT + directionIndex))) != 0;
+  };
+  return WheelInput::povFromDirections(pressed(0), pressed(1), pressed(2),
+                                       pressed(3));
 }
 
 void sendButtonState() {
   if (!paired) return;
   const auto packet = makePacket(MessageType::WheelInput, DeviceRole::Wheel,
                                  sessionId, inputSequenceNumber++,
-                                 WheelInputPayload{debouncedButtonMask});
+                                 WheelInputPayload{
+                                     static_cast<uint16_t>(
+                                         debouncedContactMask &
+                                         WheelInput::BUTTON_MASK),
+                                     static_cast<uint8_t>(currentPov())});
   reliableSender.send(peerAddress, &packet, sizeof(packet));
 }
 
 void scanButtons(const uint32_t nowMs, const uint32_t nowUs) {
-  const uint16_t newRawMask = readButtonMask();
+  const uint16_t newRawMask = readContactMask();
   bool stateChanged = false;
 
-  for (uint8_t index = 0; index < WheelConstants::BUTTON_COUNT; ++index) {
+  for (uint8_t index = 0; index < WheelInput::CONTACT_COUNT; ++index) {
     const uint16_t bit = static_cast<uint16_t>(1U << index);
     const bool rawPressed = (newRawMask & bit) != 0;
-    const bool previousRawPressed = (rawButtonMask & bit) != 0;
-    const bool debouncedPressed = (debouncedButtonMask & bit) != 0;
+    const bool previousRawPressed = (rawContactMask & bit) != 0;
+    const bool debouncedPressed = (debouncedContactMask & bit) != 0;
 
     if (rawPressed != previousRawPressed) {
-      buttonChangedAtMs[index] = nowMs;
+      contactChangedAtMs[index] = nowMs;
     } else if (rawPressed != debouncedPressed &&
-               nowMs - buttonChangedAtMs[index] >=
+               nowMs - contactChangedAtMs[index] >=
                    WheelConfig::BUTTON_DEBOUNCE_MS) {
       if (rawPressed) {
-        debouncedButtonMask |= bit;
+        debouncedContactMask |= bit;
       } else {
-        debouncedButtonMask &= ~bit;
+        debouncedContactMask &= ~bit;
       }
       stateChanged = true;
     }
   }
-  rawButtonMask = newRawMask;
+  rawContactMask = newRawMask;
 
   if (stateChanged ||
       nowUs - lastButtonReportUs >=
@@ -323,16 +343,16 @@ void setup() {
   for (const uint8_t pin : WheelConfig::BUTTON_PINS) {
     pinMode(pin, INPUT_PULLUP);
   }
-  rawButtonMask = readButtonMask();
-  debouncedButtonMask = rawButtonMask;
+  for (const uint8_t pin : WheelConfig::POV_PINS) {
+    pinMode(pin, INPUT_PULLUP);
+  }
+  rawContactMask = readContactMask();
+  debouncedContactMask = rawContactMask;
 
   bool resetRequested = false;
-  if (WheelConfig::PAIRING_RESET_BUTTON_INDEX < WheelConstants::BUTTON_COUNT &&
-      digitalRead(WheelConfig::BUTTON_PINS[
-          WheelConfig::PAIRING_RESET_BUTTON_INDEX]) == LOW) {
+  if (digitalRead(WheelConfig::PAIRING_RESET_PIN) == LOW) {
     const uint32_t heldFrom = millis();
-    while (digitalRead(WheelConfig::BUTTON_PINS[
-               WheelConfig::PAIRING_RESET_BUTTON_INDEX]) == LOW &&
+    while (digitalRead(WheelConfig::PAIRING_RESET_PIN) == LOW &&
            millis() - heldFrom < WheelConfig::PAIRING_RESET_HOLD_MS) {
       delay(10);
     }

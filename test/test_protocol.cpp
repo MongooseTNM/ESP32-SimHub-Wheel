@@ -3,24 +3,25 @@
 #include <cstring>
 
 #include "espnow_protocol.h"
+#include "wheel_input.h"
 
 using namespace WheelProtocol;
 
-void test_protocol_v4_packed_sizes() {
+void test_protocol_v5_packed_sizes() {
   TEST_ASSERT_EQUAL_UINT32(12, sizeof(PacketHeader));
   TEST_ASSERT_EQUAL_UINT32(4, sizeof(DiscoveryPayload));
   TEST_ASSERT_EQUAL_UINT32(8, sizeof(PairingPayload));
   TEST_ASSERT_EQUAL_UINT32(4, sizeof(PairResetPayload));
   TEST_ASSERT_EQUAL_UINT32(4, sizeof(HeartbeatPayload));
   TEST_ASSERT_EQUAL_UINT32(21, sizeof(TelemetryPayload));
-  TEST_ASSERT_EQUAL_UINT32(2, sizeof(WheelInputPayload));
+  TEST_ASSERT_EQUAL_UINT32(3, sizeof(WheelInputPayload));
 
   TEST_ASSERT_EQUAL_UINT32(18, sizeof(DiscoveryPacket));
   TEST_ASSERT_EQUAL_UINT32(22, sizeof(PairingPacket));
   TEST_ASSERT_EQUAL_UINT32(18, sizeof(PairResetPacket));
   TEST_ASSERT_EQUAL_UINT32(18, sizeof(HeartbeatPacket));
   TEST_ASSERT_EQUAL_UINT32(35, sizeof(TelemetryPacket));
-  TEST_ASSERT_EQUAL_UINT32(16, sizeof(WheelInputPacket));
+  TEST_ASSERT_EQUAL_UINT32(17, sizeof(WheelInputPacket));
   TEST_ASSERT_EQUAL_UINT32(sizeof(TelemetryPacket), MAX_PACKET_SIZE);
 }
 
@@ -30,7 +31,8 @@ void test_crc_standard_vector() {
 }
 
 void test_packet_validation_and_corruption_rejection() {
-  const WheelInputPayload payload{0xA55A};
+  const WheelInputPayload payload{0x055A,
+                                  static_cast<uint8_t>(WheelInput::Pov::Left)};
   auto packet = makePacket(MessageType::WheelInput, DeviceRole::Wheel,
                            0x12345678, 42, payload);
   TEST_ASSERT_TRUE(validatePacket<WheelInputPayload>(
@@ -41,6 +43,27 @@ void test_packet_validation_and_corruption_rejection() {
   TEST_ASSERT_FALSE(validatePacket<WheelInputPayload>(
       reinterpret_cast<const uint8_t *>(&packet), sizeof(packet),
       MessageType::WheelInput, DeviceRole::Wheel, 0x12345678, true));
+}
+
+void test_pov_cardinal_diagonal_and_conflicting_directions() {
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(WheelInput::Pov::Neutral),
+                          static_cast<uint8_t>(WheelInput::povFromDirections(
+                              false, false, false, false)));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(WheelInput::Pov::Up),
+                          static_cast<uint8_t>(WheelInput::povFromDirections(
+                              true, false, false, false)));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(WheelInput::Pov::UpRight),
+                          static_cast<uint8_t>(WheelInput::povFromDirections(
+                              true, true, false, false)));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(WheelInput::Pov::DownLeft),
+                          static_cast<uint8_t>(WheelInput::povFromDirections(
+                              false, false, true, true)));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(WheelInput::Pov::Neutral),
+                          static_cast<uint8_t>(WheelInput::povFromDirections(
+                              true, true, true, true)));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(WheelInput::Pov::Right),
+                          static_cast<uint8_t>(WheelInput::povFromDirections(
+                              true, true, true, false)));
 }
 
 void test_wrong_metadata_and_length_are_rejected() {
@@ -76,11 +99,12 @@ void test_session_derivation_is_stable_and_nonzero() {
 
 int main(int, char **) {
   UNITY_BEGIN();
-  RUN_TEST(test_protocol_v4_packed_sizes);
+  RUN_TEST(test_protocol_v5_packed_sizes);
   RUN_TEST(test_crc_standard_vector);
   RUN_TEST(test_packet_validation_and_corruption_rejection);
   RUN_TEST(test_wrong_metadata_and_length_are_rejected);
   RUN_TEST(test_sequence_comparison_wraps_safely);
   RUN_TEST(test_session_derivation_is_stable_and_nonzero);
+  RUN_TEST(test_pov_cardinal_diagonal_and_conflicting_directions);
   return UNITY_END();
 }

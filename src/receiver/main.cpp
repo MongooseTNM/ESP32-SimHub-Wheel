@@ -15,6 +15,7 @@
 #include "reliable_sender.h"
 #include "wheel_config.h"
 #include "wheel_constants.h"
+#include "wheel_input.h"
 
 namespace {
 using namespace WheelProtocol;
@@ -28,9 +29,12 @@ uint16_t sequenceNumber = 0;
 uint32_t lastHeartbeatSentMs = 0;
 volatile uint32_t lastWheelInputMs = 0;
 volatile uint16_t receivedButtonMask = 0;
+volatile uint8_t receivedPov = static_cast<uint8_t>(WheelInput::Pov::Neutral);
 volatile bool inputPending = false;
 uint16_t reportedButtonMask = 0;
 uint16_t activeButtonMask = 0;
+uint8_t reportedPov = static_cast<uint8_t>(WheelInput::Pov::Neutral);
+uint8_t activePov = static_cast<uint8_t>(WheelInput::Pov::Neutral);
 uint32_t lastHidReportUs = 0;
 char serialLine[96]{};
 size_t serialLineLength = 0;
@@ -87,6 +91,7 @@ void clearPairing() {
   sessionId = 0;
   haveInputSequence = false;
   activeButtonMask = 0;
+  activePov = static_cast<uint8_t>(WheelInput::Pov::Neutral);
 }
 
 template <typename Payload>
@@ -156,7 +161,11 @@ void onDataReceived(const uint8_t *source, const uint8_t *data, const int length
         !isSequenceNewer(packet.header.sequence, lastInputSequence)) return;
     lastInputSequence = packet.header.sequence;
     haveInputSequence = true;
-    receivedButtonMask = packet.payload.buttonMask;
+    receivedButtonMask = packet.payload.buttonMask & WheelInput::BUTTON_MASK;
+    receivedPov = packet.payload.pov <=
+                          static_cast<uint8_t>(WheelInput::Pov::UpLeft)
+                      ? packet.payload.pov
+                      : static_cast<uint8_t>(WheelInput::Pov::Neutral);
     lastWheelInputMs = millis();
     inputPending = true;
   }
@@ -259,10 +268,11 @@ void processSimHubSerial() {
   }
 }
 
-void sendGamepadReport(const uint16_t buttonMask) {
-  // Neutral axes and hat; the low eight bits map to gamepad buttons 1-8.
-  gamepad.send(0, 0, 0, 0, 0, 0, 0, buttonMask);
+void sendGamepadReport(const uint16_t buttonMask, const uint8_t pov) {
+  // Neutral axes, 11 buttons, and one eight-direction POV hat.
+  gamepad.send(0, 0, 0, 0, 0, 0, pov, buttonMask);
   reportedButtonMask = buttonMask;
+  reportedPov = pov;
 }
 }  // namespace
 
@@ -322,22 +332,24 @@ void loop() {
   if (inputPending) {
     inputPending = false;
     const uint16_t buttonMask = receivedButtonMask;
-    if (buttonMask != activeButtonMask) {
-      activeButtonMask = buttonMask;
-    }
+    const uint8_t pov = receivedPov;
+    activeButtonMask = buttonMask;
+    activePov = pov;
   }
 
-  if (activeButtonMask != 0 &&
+  if ((activeButtonMask != 0 ||
+       activePov != static_cast<uint8_t>(WheelInput::Pov::Neutral)) &&
       now - lastWheelInputMs >= WheelProtocol::INPUT_TIMEOUT_MS) {
     activeButtonMask = 0;
+    activePov = static_cast<uint8_t>(WheelInput::Pov::Neutral);
   }
 
   const uint32_t nowUs = micros();
-  if (activeButtonMask != reportedButtonMask ||
+  if (activeButtonMask != reportedButtonMask || activePov != reportedPov ||
       nowUs - lastHidReportUs >=
           WheelConstants::INPUT_SAFETY_REFRESH_INTERVAL_US) {
     lastHidReportUs = nowUs;
-    sendGamepadReport(activeButtonMask);
+    sendGamepadReport(activeButtonMask, activePov);
   }
   if (now - lastHeartbeatSentMs >= WheelProtocol::HEARTBEAT_INTERVAL_MS) {
     lastHeartbeatSentMs = now;
