@@ -1,8 +1,16 @@
-# ESP32 SimHub Wireless Wheel
+# ESP32 SimHub Wireless Wheel, USB Shifter, and USB Pedals
 
 A two-board wireless sim-racing wheel prototype built for the Waveshare
 ESP32-S3-Zero. The wheel sends button states to a USB receiver over ESP-NOW,
 while the receiver sends SimHub RPM telemetry back to the wheel.
+
+The repository also contains an independent, single-board USB firmware for a
+Logitech six-speed H-pattern shifter. The shifter firmware does not use SimHub,
+Wi-Fi, ESP-NOW, LEDs, or either wheel board.
+
+A second independent USB firmware provides three calibrated analog axes for
+gas, brake, and clutch pedals. It uses one ESP32-S3-Zero and does not depend on the
+wheel, receiver, shifter, SimHub, or wireless link.
 
 The receiver appears to the PC as a composite USB device:
 
@@ -27,6 +35,12 @@ rotary encoders, analog axes, or battery monitoring are implemented yet.
 - SimHub per-car shift-light behavior.
 - Full-strip blue flashing when SimHub reports that redline was reached.
 - No debug text on the receiver CDC port, avoiding interference with SimHub.
+- A separate generic USB HID/DirectInput shifter target with gears 1-6 and
+  reverse exposed as seven game-controller buttons.
+- Configurable analog gate thresholds, hysteresis, filtering, stability timing,
+  and USB serial diagnostics for shifter tuning.
+- A standalone three-axis USB HID pedal target with independent gas, brake, and clutch
+  calibration, filtering, endpoint dead zones, and serial diagnostics.
 
 ## What you need
 
@@ -35,6 +49,10 @@ rotary encoders, analog axes, or battery monitoring are implemented yet.
 - Two Waveshare ESP32-S3-Zero boards:
   - One for the wireless wheel.
   - One for the PC-connected receiver.
+- One additional Waveshare ESP32-S3-Zero if building the independent USB
+  shifter target.
+- One additional Waveshare ESP32-S3-Zero if building the independent USB pedal
+  target.
 - Two normally-open shifter switches, one 5-way switch, and eight additional
   normally-open momentary switches.
 - A WS2812B-compatible LED strip; the default configuration uses 12 LEDs.
@@ -56,7 +74,13 @@ rotary encoders, analog axes, or battery monitoring are implemented yet.
 |---|---|
 | `src/wheel/main.cpp` | Wireless wheel firmware. |
 | `src/receiver/main.cpp` | USB receiver and SimHub bridge firmware. |
+| `src/shifter/main.cpp` | Standalone USB H-pattern shifter firmware. |
+| `src/pedals/main.cpp` | Standalone USB gas, brake, and clutch pedal firmware. |
 | `include/wheel_config.h` | User-adjustable pins, LED settings, and timing. |
+| `include/shifter_config.h` | Shifter pins, ADC thresholds, filtering, and timing. |
+| `include/shifter_input.h` | Hardware-independent H-pattern classification and HID mapping. |
+| `include/pedals_config.h` | Pedal ADC pins, endpoint calibration, filtering, and timing. |
+| `include/pedals_input.h` | Hardware-independent pedal calibration and HID scaling. |
 | `include/wheel_constants.h` | Values derived from the user configuration. |
 | `include/wheel_input.h` | Shared button and POV input model. |
 | `include/espnow_protocol.h` | Shared ESP-NOW packet definitions. |
@@ -131,18 +155,244 @@ Edit these values in `include/wheel_config.h` to match the hardware:
 - `STARTUP_FLASH_OFF_MS`
 - `SHIFT_FLASH_INTERVAL_MS`
 
+## Standalone Logitech H-pattern shifter
+
+### Compatibility and HID mapping
+
+The `shifter` environment appears to Windows as a generic USB HID game
+controller. This standards-based DirectInput-style device is preferable to
+emulating a specific Logitech product or an Xbox/XInput controller: most PC
+driving simulators can bind a separate generic controller, and no vendor driver
+is required.
+
+| Lever position | HID output |
+|---|---:|
+| Neutral | No buttons |
+| Gear 1 | Button 1 held |
+| Gear 2 | Button 2 held |
+| Gear 3 | Button 3 held |
+| Gear 4 | Button 4 held |
+| Gear 5 | Button 5 held |
+| Gear 6, reverse switch low | Button 6 held |
+| Gear 6, reverse switch high | Button 7 held (reverse) |
+
+Only one gear button can be active. The X and Y sensor signals are interpreted
+inside the firmware and are not exposed as game axes because there is no common
+game-facing standard for raw H-pattern position axes.
+
+This mapping is suitable for Windows games that provide separate bindings for
+Gear 1 through Gear 6 and Reverse, including many circuit, rally, trucking, and
+driving simulators. Bind all seven controls in each game's controller settings.
+Some games only enable H-pattern shifting for cars that actually have an
+H-pattern transmission, and some older or arcade-oriented games do not accept a
+second controller. Generic DIY USB HID does not provide PlayStation or Xbox
+console compatibility; those consoles require an authenticated/licensed device
+or compatible adapter.
+
+### Shifter wiring
+
+The default pin assignments are:
+
+| Logitech shifter signal | ESP32-S3-Zero pin | Input mode |
+|---|---:|---|
+| Reverse switch | GPIO 4 | Digital, active-high, internal pull-down |
+| X position | GPIO 5 | 12-bit ADC |
+| Y position | GPIO 6 | 12-bit ADC |
+| Ground | GND | Common ground |
+
+**Electrical warning:** ESP32-S3 GPIOs are not 5 V tolerant. The reverse, X,
+and Y inputs must remain between 0 V and 3.3 V at all times, and the shifter and
+ESP32 must share ground. If using unmodified original Logitech electronics or a
+5 V supply, measure the outputs and add suitable voltage dividers/buffering
+before connecting them. Do not rely on firmware to protect an over-voltage pin.
+
+### Build, upload, and verify the shifter
+
+Build and upload only the standalone target:
+
+```sh
+platformio run -e shifter
+platformio run -e shifter -t upload
+```
+
+After flashing, unplug and reconnect the board so Windows enumerates `ESP32
+H-Pattern Shifter`. Press **Win+R**, run `joy.cpl`, select the shifter, and open
+**Properties**. Confirm that neutral releases every button, positions 1-6 hold
+buttons 1-6, and selecting the sixth-gear position with the reverse switch high
+holds button 7 instead of button 6.
+
+### Calibrate from the seven shifter positions
+
+You do not need to calculate any thresholds. Open the shifter's USB serial port
+at 115200 baud. Every 250 ms it prints a line similar to:
+
+```text
+rawX=820 rawY=760 filteredX=823 filteredY=765 reverse=0 candidate=1 reported=1 mask=0x01
+```
+
+On macOS in this project, use:
+
+```sh
+platformio device monitor -e shifter
+```
+
+The `shifter` environment is configured to select `/dev/cu.usbmodem*` with DTR
+enabled and RTS disabled. This avoids PlatformIO silently opening an unrelated
+Bluetooth or debug-console port. The monitor should immediately print `ESP32
+H-Pattern Shifter diagnostics connected`; it is not necessary to reset the
+board after opening the port. Exit the monitor with **Ctrl+C** before uploading.
+
+With the monitor open, type `C` in each shifter position to print a compact
+`{rawX, rawY}` pair that can be copied directly into the matching calibration
+entry. Type `H` or `?` to print the available commands.
+
+If the port is not found after uploading, unplug and reconnect the board, wait
+a few seconds for TinyUSB to enumerate, and list the available ports with:
+
+```sh
+platformio device list
+```
+
+On Windows, choose the shifter's new `COM` port in PlatformIO's serial monitor
+and use 115200 baud. The macOS wildcard in `platformio.ini` can be removed or
+overridden with the correct `COM` port when monitoring from Windows.
+
+1. Hold the lever steadily in neutral and positions 1 through 6. For each
+   position, record the displayed `rawX` and `rawY`; using the approximate
+   middle of several readings is better than copying an occasional extreme.
+2. Enter those seven X/Y pairs as `NEUTRAL`, `GEAR_1`, through `GEAR_6` in
+   `include/shifter_config.h`.
+3. Rebuild and upload the `shifter` environment. The firmware automatically
+   averages the three X columns and three Y rows, detects whether either axis is
+   reversed, and places each threshold halfway between adjacent positions.
+4. Check the recurring `calibration` diagnostic line to see the calculated axis
+   directions and four boundaries, then verify every position in Windows
+   `joy.cpl`.
+
+For example, a measured first-gear position of X=812 and Y=735 is entered as:
+
+```cpp
+constexpr Position GEAR_1 = {812, 735};
+```
+
+The calibration is rejected at compile time if readings exceed the ADC range,
+the left/center/right or forward/neutral/back positions are not distinguishable,
+or adjacent positions are too close for the selected hysteresis. Increase
+`AXIS_HYSTERESIS` modestly if a correctly calibrated gate chatters; reduce it if
+the compiler reports insufficient separation or a gate is difficult to leave.
+
+`ADC_FILTER_DIVISOR` controls smoothing and `GEAR_STABILITY_MS` controls how
+long a candidate must remain stable before USB output changes. The defaults are
+intended to reject sensor noise without making shifts feel delayed. USB serial
+diagnostics may remain open while testing and are not required during gameplay.
+
+## Standalone gas, brake, and clutch pedals
+
+### Pedal wiring
+
+The `pedals` environment is a separate generic USB HID game controller. Gas is
+reported as X/Axis 1, brake as Y/Axis 2, and clutch as Z/Axis 3; no buttons,
+other axes, or hat are advertised. The defaults use GPIO 9 for gas, GPIO 10 for
+brake, and GPIO 11 for clutch.
+
+The shifter and pedals have different compile-time USB identities so games do
+not combine them as identical `TinyUSB HID` controllers:
+
+| Environment | USB product name | USB VID:PID |
+|---|---|---|
+| `shifter` | Shifter | `303A:4010` |
+| `pedals` | Pedals | `303A:4011` |
+
+The product names and product IDs are assigned before TinyUSB starts. The
+firmware also replaces Arduino's default `TinyUSB HID` interface string with
+the matching `Shifter` or `Pedals` name because some games display the HID
+interface name instead of the parent USB product name.
+
+For each ordinary three-wire potentiometer, wire:
+
+```text
+ESP32 3.3 V ---- potentiometer outside terminal
+ESP32 GND ------ potentiometer other outside terminal
+ESP32 GPIO ----- potentiometer center/wiper terminal
+```
+
+| Control | ESP32-S3-Zero pin | USB HID output |
+|---|---:|---|
+| Gas wiper/signal | GPIO 9 | X / Axis 1 |
+| Brake wiper/signal | GPIO 10 | Y / Axis 2 |
+| Clutch wiper/signal | GPIO 11 | Z / Axis 3 |
+| All potentiometer supplies | 3.3 V | — |
+| All potentiometer grounds | GND | — |
+
+The two outside potentiometer terminals may be swapped. Calibration detects
+whether raw values rise or fall as the pedal is pressed. The wiper must always
+remain between 0 V and 3.3 V. **Never connect 5 V to an ESP32-S3 input.** This
+wiring is intended for potentiometers or 3.3 V-compatible analog sensors. A
+load cell requires a suitable amplifier whose output is limited to 0-3.3 V.
+
+### Build, upload, and calibrate the pedals
+
+Build and upload the standalone pedal target:
+
+```sh
+platformio run -e pedals
+platformio run -e pedals -t upload
+platformio device monitor -e pedals
+```
+
+The monitor runs at 115200 baud and prints both raw ADC readings and calculated
+percentages every 250 ms. It is configured for `/dev/cu.usbmodem*` on macOS in
+the same way as the shifter monitor. Type `C` to print a compact snapshot.
+
+1. Release all three pedals and record several stable `rawGas`, `rawBrake`, and
+   `rawClutch` readings.
+2. Fully press all three pedals and record several stable readings again.
+3. Enter the released and pressed values as `GAS_RELEASED_RAW`,
+   `GAS_PRESSED_RAW`, `BRAKE_RELEASED_RAW`, `BRAKE_PRESSED_RAW`,
+   `CLUTCH_RELEASED_RAW`, and `CLUTCH_PRESSED_RAW` in `include/pedals_config.h`.
+4. Rebuild and upload `pedals`, then unplug and reconnect the board.
+5. Open Windows `joy.cpl` or the game's input-binding screen and verify that
+   each axis travels independently from 0% when released to 100% when pressed.
+
+After installing firmware with a changed USB identity, unplug and reconnect the
+board. If Windows or a game still displays a previously cached `TinyUSB HID`
+name, remove that old controller in Device Manager (enable **View > Show hidden
+devices** if necessary), reconnect the board, and restart the game. Existing
+control bindings may need to be assigned again because the PID intentionally
+makes each target a distinct controller.
+
+The firmware descriptors are limited to controls that physically exist: the
+shifter advertises seven buttons, while the pedals advertise three axes. They no
+longer use Arduino's generic descriptor that Windows describes as `6 axis 32
+button device with hat switch`.
+
+No registry edits, PowerShell scripts, custom drivers, or INF files are needed.
+The names and unique identities are supplied entirely by the firmware. A game
+that ignores USB product/interface strings may still display a generic
+capability-based label, but the distinct product IDs ensure that shifter and
+pedals remain separate controllers with separate bindings.
+
+`END_DEAD_ZONE` reserves a small number of raw ADC counts at both calibrated
+ends so mechanical variation still reaches exact 0% and 100%. Increase it
+slightly if an axis does not settle at an endpoint. `ADC_FILTER_DIVISOR`
+controls smoothing; larger values are smoother but respond more slowly.
+
 ## Build environments
 
-The project contains two PlatformIO environments:
+The project contains four ESP32-S3 PlatformIO environments plus the native
+test environment:
 
 | Environment | Install on | Function |
 |---|---|---|
 | `wheel` | Battery-powered wheel board | Reads buttons, drives LEDs, and exchanges ESP-NOW packets. |
 | `receiver` | USB-connected board | Receives buttons as USB HID and forwards SimHub telemetry. |
+| `shifter` | USB-connected shifter board | Reads Logitech H-pattern axes/reverse and reports seven generic HID buttons. |
+| `pedals` | USB-connected pedal board | Reads gas, brake, and clutch potentiometers and reports three calibrated HID axes. |
 
-Both environments are based on `esp32-s3-devkitc-1` with settings adjusted for
-the Waveshare ESP32-S3-Zero's 4 MB flash and 2 MB OPI PSRAM. The receiver uses
-TinyUSB device mode so CDC serial and HID gamepad can coexist.
+All four ESP32 environments are based on `esp32-s3-devkitc-1` with settings
+adjusted for the Waveshare ESP32-S3-Zero's 4 MB flash and 2 MB OPI PSRAM. The
+receiver, shifter, and pedals use TinyUSB device mode so CDC serial and HID can
+coexist.
 
 Packets use protocol version 6, which combines gear-aware telemetry with the
 expanded button and POV input payload. Flash both boards after updating;
@@ -167,8 +417,12 @@ directory:
 ```sh
 platformio run -e wheel
 platformio run -e receiver
+platformio run -e shifter
+platformio run -e pedals
 platformio run -e wheel -t upload
 platformio run -e receiver -t upload
+platformio run -e shifter -t upload
+platformio run -e pedals -t upload
 ```
 
 If `platformio` is not available on the command line on macOS, PlatformIO's
@@ -376,8 +630,10 @@ stream.
   reset notification is lost, its NVS record must be erased by reflashing with
   flash erase before pairing it to a different wheel.
 - The receiver CDC and HID interfaces share the ESP32-S3 TinyUSB stack.
-- Only direct digital inputs are implemented; there are no analog axes,
-  encoders, analog paddles with calibration, or button matrix support.
+- The wireless wheel targets only implement direct digital controls; they do
+  not implement analog axes, encoders, analog paddles with calibration, or a
+  button matrix. The independent shifter and pedal targets do read analog
+  sensors, but their inputs are not combined into the wireless receiver.
 - No wheel display or battery telemetry is implemented.
 
 ## AI-assisted development disclaimer
